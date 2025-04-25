@@ -1,11 +1,11 @@
 // src/pages/BookDetailPage.jsx
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { 
-  ArrowLeft, Star, Users, Clock, BookOpen, Heart, Calendar, 
+
+import { ArrowLeft, Star, Users, Clock, BookOpen, Heart, Calendar, 
   FileText, Check, Award, Languages, Film, Tag, Edit, Save, X,
-  Play, Pause, Timer, ChevronDown, ChevronUp, BarChart2
-} from 'lucide-react';
+  Play, Pause, Timer, ChevronDown, ChevronUp, BarChart2, BookmarkPlus, BookmarkCheck, List } from 'lucide-react';
+
 import TopNavigation from '../Components/TopNavigation';
 import { useAuth } from '../auth/AuthContext';
 import bookService from '../services/bookService';
@@ -191,12 +191,21 @@ const BookDetailPage = () => {
   const [showSessionForm, setShowSessionForm] = useState(false);
   const [readingSessions, setReadingSessions] = useState([]);
   const [showSessionHistory, setShowSessionHistory] = useState(false);
+  const [isFavorite, setIsFavorite] = useState(false);
+  const [favoriteLoading, setFavoriteLoading] = useState(false);  
+  const [isInWantToRead, setIsInWantToRead] = useState(false);
+  const [wantToReadLoading, setWantToReadLoading] = useState(false);
   
   useEffect(() => {
     if (!currentUser) {
       navigate('/signin');
       return;
     }
+
+  
+
+
+    
     
     const loadBookDetails = async () => {
       try {
@@ -243,6 +252,14 @@ const BookDetailPage = () => {
         // Get reading sessions history
         const sessions = await bookService.getBookReadingSessions(currentUser.id, id);
         setReadingSessions(sessions);
+
+        const favoriteStatus = await bookService.isBookFavorite(currentUser.id, id);
+        setIsFavorite(favoriteStatus);
+
+
+        const wantToReadStatus = await bookService.isBookInWantToRead(currentUser.id, id);
+        setIsInWantToRead(wantToReadStatus);
+
         
       } catch (error) {
         console.error("Error loading book details:", error);
@@ -285,13 +302,39 @@ const BookDetailPage = () => {
         // Otherwise just mark as finished
         await bookService.updateUserBookStatus(currentUser.id, id, newStatus);
         setReadingStatus(newStatus);
+        
+        // If the book was in want-to-read, remove it
+        if (isInWantToRead) {
+          await bookService.removeFromWantToRead(currentUser.id, id);
+          setIsInWantToRead(false);
+        }
         return;
       }
       
-      // Normal status change
+      // Handle want-to-read status
+      if (newStatus === 'want-to-read') {
+        await bookService.addToWantToRead(currentUser.id, id);
+        setIsInWantToRead(true);
+        
+        // If the book was being read, remove that status
+        if (readingStatus === 'reading') {
+          await bookService.updateUserBookStatus(currentUser.id, id, 'none');
+        }
+        
+        setReadingStatus('want-to-read');
+        return;
+      }
+      
+      // Normal status change for reading
       await bookService.updateUserBookStatus(currentUser.id, id, newStatus, 
         newStatus === 'reading' ? currentPage : null);
       setReadingStatus(newStatus);
+      
+      // If the book was in want-to-read and is now being read, remove from want-to-read
+      if (newStatus === 'reading' && isInWantToRead) {
+        await bookService.removeFromWantToRead(currentUser.id, id);
+        setIsInWantToRead(false);
+      }
       
       if (newStatus === 'reading' && !isReading) {
         setShowSessionForm(true);
@@ -300,6 +343,7 @@ const BookDetailPage = () => {
       console.error("Error updating reading status:", error);
     }
   };
+  
   
   // Handle finishing book with active session
   const handleFinishWithSession = async () => {
@@ -407,6 +451,56 @@ const BookDetailPage = () => {
       console.error("Error stopping reading session:", error);
     }
   };
+
+ 
+
+
+  const handleToggleFavorite = async () => {
+    try {
+      setFavoriteLoading(true);
+      
+      if (isFavorite) {
+        // Remove from favorites
+        await bookService.removeFromFavorites(currentUser.id, id);
+        setIsFavorite(false);
+      } else {
+        // Add to favorites
+        await bookService.addToFavorites(currentUser.id, id);
+        setIsFavorite(true);
+      }
+    } catch (error) {
+      console.error("Error toggling favorite status:", error);
+    } finally {
+      setFavoriteLoading(false);
+    }
+  };
+
+  const handleToggleWantToRead = async () => {
+    try {
+      setWantToReadLoading(true);
+      
+      if (isInWantToRead) {
+        // Remove from want-to-read list
+        await bookService.removeFromWantToRead(currentUser.id, id);
+        setIsInWantToRead(false);
+      } else {
+        // Add to want-to-read list
+        await bookService.addToWantToRead(currentUser.id, id);
+        setIsInWantToRead(true);
+        
+        // If the book is added to want-to-read, make sure it's not being read or finished
+        if (readingStatus === 'reading' || readingStatus === 'finished') {
+          setReadingStatus('want-to-read');
+        }
+      }
+    } catch (error) {
+      console.error("Error toggling want-to-read status:", error);
+    } finally {
+      setWantToReadLoading(false);
+    }
+  };
+  
+  
   
   const handleUpdatePage = async () => {
     try {
@@ -584,6 +678,52 @@ const BookDetailPage = () => {
                   >
                     <Check className="h-4 w-4 mr-1" />
                     Finished
+                  </button>
+
+                  <button
+                      className={`px-3 py-1 rounded-full text-sm font-medium flex items-center ${
+                        wantToReadLoading ? 'bg-gray-300 text-gray-500' : 
+                        isInWantToRead ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      }`}
+                      onClick={handleToggleWantToRead}
+                      disabled={wantToReadLoading || readingStatus === 'reading' || readingStatus === 'finished'}
+                    >
+                      {wantToReadLoading ? (
+                        <span className="animate-pulse">...</span>
+                      ) : isInWantToRead ? (
+                        <>
+                          <List className="h-4 w-4 mr-1" />
+                          In Reading List
+                        </>
+                      ) : (
+                        <>
+                          <List className="h-4 w-4 mr-1" />
+                          Add to Reading List
+                        </>
+                      )}
+                    </button>
+
+                  <button
+                    className={`px-3 py-1 rounded-full text-sm font-medium flex items-center ${
+                      favoriteLoading ? 'bg-gray-300 text-gray-500' : 
+                      isFavorite ? 'bg-yellow-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                    onClick={handleToggleFavorite}
+                    disabled={favoriteLoading}
+                  >
+                    {favoriteLoading ? (
+                      <span className="animate-pulse">...</span>
+                    ) : isFavorite ? (
+                      <>
+                        <BookmarkCheck className="h-4 w-4 mr-1" />
+                        Favorited
+                      </>
+                    ) : (
+                      <>
+                        <BookmarkPlus className="h-4 w-4 mr-1" />
+                        Add to Favorites
+                      </>
+                    )}
                   </button>
                 </div>
                 

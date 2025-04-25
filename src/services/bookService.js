@@ -627,6 +627,195 @@ class BookService {
       };
     }
   }
+
+
+  // Add these new methods to the BookService class in src/services/bookService.js
+
+// Check if a book is in user's favorites
+async isBookFavorite(userId, bookId) {
+  try {
+    const query = `
+      MATCH (u:USER {id: $userId})-[f:FAVORITES]->(b:BOOK {id: $bookId})
+      RETURN f IS NOT NULL as isFavorite
+    `;
+    
+    const result = await neo4jService.executeQuery(query, { userId, bookId });
+    
+    return result.length > 0 && result[0].get('isFavorite');
+  } catch (error) {
+    console.error('Error checking book favorite status:', error);
+    return false;
+  }
+}
+
+// Add a book to user's favorites
+async addToFavorites(userId, bookId) {
+  try {
+    const query = `
+      MATCH (u:USER {id: $userId}), (b:BOOK {id: $bookId})
+      MERGE (u)-[f:FAVORITES {addedOn: datetime()}]->(b)
+      RETURN f IS NOT NULL as success
+    `;
+    
+    const result = await neo4jService.executeQuery(query, { userId, bookId });
+    
+    // Create a history entry for adding to favorites
+    const historyQuery = `
+      MATCH (u:USER {id: $userId}), (b:BOOK {id: $bookId})
+      MERGE (u)-[:HAS_HISTORY]->(rh:READING_HISTORY {id: "RH-" + u.id + "-" + b.id})
+      
+      WITH u, b, rh
+      
+      CREATE (he:HISTORY_ENTRY {
+        id: "ENTRY-" + apoc.create.uuid(),
+        action: "added-to-favorites",
+        timestamp: datetime(),
+        context: "app"
+      })
+      
+      CREATE (rh)-[:CONTAINS_ENTRY]->(he)
+      CREATE (he)-[:REFERENCES_BOOK]->(b)
+    `;
+    
+    await neo4jService.executeQuery(historyQuery, { userId, bookId });
+    
+    return result.length > 0 && result[0].get('success');
+  } catch (error) {
+    console.error('Error adding book to favorites:', error);
+    return false;
+  }
+}
+
+// Remove a book from user's favorites
+async removeFromFavorites(userId, bookId) {
+  try {
+    const query = `
+      MATCH (u:USER {id: $userId})-[f:FAVORITES]->(b:BOOK {id: $bookId})
+      DELETE f
+      RETURN true as success
+    `;
+    
+    const result = await neo4jService.executeQuery(query, { userId, bookId });
+    
+    // Create a history entry for removing from favorites
+    const historyQuery = `
+      MATCH (u:USER {id: $userId}), (b:BOOK {id: $bookId})
+      MERGE (u)-[:HAS_HISTORY]->(rh:READING_HISTORY {id: "RH-" + u.id + "-" + b.id})
+      
+      WITH u, b, rh
+      
+      CREATE (he:HISTORY_ENTRY {
+        id: "ENTRY-" + apoc.create.uuid(),
+        action: "removed-from-favorites",
+        timestamp: datetime(),
+        context: "app"
+      })
+      
+      CREATE (rh)-[:CONTAINS_ENTRY]->(he)
+      CREATE (he)-[:REFERENCES_BOOK]->(b)
+    `;
+    
+    await neo4jService.executeQuery(historyQuery, { userId, bookId });
+    
+    return result.length > 0 && result[0].get('success');
+  } catch (error) {
+    console.error('Error removing book from favorites:', error);
+    return false;
+  }
+}
+
+
+async isBookInWantToRead(userId, bookId) {
+  try {
+    const query = `
+      MATCH (u:USER {id: $userId})-[r:WANTS_TO_READ]->(b:BOOK {id: $bookId})
+      RETURN r IS NOT NULL as isInWantToRead
+    `;
+    
+    const result = await neo4jService.executeQuery(query, { userId, bookId });
+    
+    return result.length > 0 && result[0].get('isInWantToRead');
+  } catch (error) {
+    console.error('Error checking book want-to-read status:', error);
+    return false;
+  }
+}
+
+// Add a book to user's want-to-read list
+async addToWantToRead(userId, bookId) {
+  try {
+    const query = `
+      MATCH (u:USER {id: $userId}), (b:BOOK {id: $bookId})
+      MERGE (u)-[r:WANTS_TO_READ {date: datetime()}]->(b)
+      RETURN r IS NOT NULL as success
+    `;
+    
+    const result = await neo4jService.executeQuery(query, { userId, bookId });
+    
+    // Create a history entry for adding to want-to-read
+    const historyQuery = `
+      MATCH (u:USER {id: $userId}), (b:BOOK {id: $bookId})
+      MERGE (u)-[:HAS_HISTORY]->(rh:READING_HISTORY {id: "RH-" + u.id + "-" + b.id})
+      
+      WITH u, b, rh
+      
+      CREATE (he:HISTORY_ENTRY {
+        id: "ENTRY-" + apoc.create.uuid(),
+        action: "want-to-read",
+        timestamp: datetime(),
+        context: "app"
+      })
+      
+      CREATE (rh)-[:CONTAINS_ENTRY]->(he)
+      CREATE (he)-[:REFERENCES_BOOK]->(b)
+    `;
+    
+    await neo4jService.executeQuery(historyQuery, { userId, bookId });
+    
+    return result.length > 0 && result[0].get('success');
+  } catch (error) {
+    console.error('Error adding book to want-to-read:', error);
+    return false;
+  }
+}
+
+// Remove a book from user's want-to-read list
+async removeFromWantToRead(userId, bookId) {
+  try {
+    const query = `
+      MATCH (u:USER {id: $userId})-[r:WANTS_TO_READ]->(b:BOOK {id: $bookId})
+      DELETE r
+      RETURN true as success
+    `;
+    
+    const result = await neo4jService.executeQuery(query, { userId, bookId });
+    
+    // Create a history entry for removing from want-to-read
+    const historyQuery = `
+      MATCH (u:USER {id: $userId}), (b:BOOK {id: $bookId})
+      MERGE (u)-[:HAS_HISTORY]->(rh:READING_HISTORY {id: "RH-" + u.id + "-" + b.id})
+      
+      WITH u, b, rh
+      
+      CREATE (he:HISTORY_ENTRY {
+        id: "ENTRY-" + apoc.create.uuid(),
+        action: "removed-from-want-to-read",
+        timestamp: datetime(),
+        context: "app"
+      })
+      
+      CREATE (rh)-[:CONTAINS_ENTRY]->(he)
+      CREATE (he)-[:REFERENCES_BOOK]->(b)
+    `;
+    
+    await neo4jService.executeQuery(historyQuery, { userId, bookId });
+    
+    return result.length > 0 && result[0].get('success');
+  } catch (error) {
+    console.error('Error removing book from want-to-read:', error);
+    return false;
+  }
+}
 }
 
 export default new BookService();
