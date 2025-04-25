@@ -3,14 +3,15 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, Star, Users, Clock, BookOpen, Heart, Calendar, 
-  FileText, Check, Award, Languages, Film, Tag
+  FileText, Check, Award, Languages, Film, Tag, Edit, Save, X,
+  Play, Pause, Timer, ChevronDown, ChevronUp, BarChart2
 } from 'lucide-react';
 import TopNavigation from '../Components/TopNavigation';
 import { useAuth } from '../auth/AuthContext';
 import bookService from '../services/bookService';
 import { getConsistentColor } from '../utils/colorUtils';
 
-// Function to map color names to Tailwind classes
+// Keep all utility functions unchanged
 const getColorClass = (colorName) => {
   const colorMap = {
     'red': 'bg-red-200',
@@ -21,15 +22,12 @@ const getColorClass = (colorName) => {
     'pink': 'bg-pink-200',
     'indigo': 'bg-indigo-200',
     'gray': 'bg-gray-200',
-    // Add more colors as needed
-    // Default fallback
     'default': 'bg-gray-200'
   };
   
   return colorMap[colorName] || colorMap.default;
 };
 
-// Function for text color classes
 const getTextColorClass = (colorName) => {
   const colorMap = {
     'red': 'text-red-700',
@@ -40,14 +38,12 @@ const getTextColorClass = (colorName) => {
     'pink': 'text-pink-700',
     'indigo': 'text-indigo-700',
     'gray': 'text-gray-700',
-    // Default fallback
     'default': 'text-gray-700'
   };
   
   return colorMap[colorName] || colorMap.default;
 };
 
-// Function for background hover classes
 const getHoverBgClass = (colorName) => {
   const colorMap = {
     'red': 'hover:bg-red-200',
@@ -58,14 +54,12 @@ const getHoverBgClass = (colorName) => {
     'pink': 'hover:bg-pink-200',
     'indigo': 'hover:bg-indigo-200',
     'gray': 'hover:bg-gray-200',
-    // Default fallback
     'default': 'hover:bg-gray-200'
   };
   
   return colorMap[colorName] || colorMap.default;
 };
 
-// Function for light background classes
 const getLightBgClass = (colorName) => {
   const colorMap = {
     'red': 'bg-red-100',
@@ -76,31 +70,26 @@ const getLightBgClass = (colorName) => {
     'pink': 'bg-pink-100',
     'indigo': 'bg-indigo-100',
     'gray': 'bg-gray-100',
-    // Default fallback
     'default': 'bg-gray-100'
   };
   
   return colorMap[colorName] || colorMap.default;
 };
 
-// Helper function to safely convert objects to string representation
 const safeToString = (value) => {
   if (value === null || value === undefined) {
     return '';
   }
   
   if (typeof value === 'object') {
-    // If object has a toString method, use it
     if (value.toString !== Object.prototype.toString) {
       return value.toString();
     }
     
-    // Handle objects with low/high properties (likely Firestore numeric values)
     if (value.hasOwnProperty('low') && value.hasOwnProperty('high')) {
       return `${value.low}`;
     }
     
-    // For other objects, convert to JSON string
     try {
       return JSON.stringify(value);
     } catch (e) {
@@ -109,6 +98,69 @@ const safeToString = (value) => {
   }
   
   return String(value);
+};
+
+const formatDecimal = (value) => {
+  if (value === null || value === undefined) {
+    return '0.0';
+  }
+  
+  let numValue = value;
+  if (typeof value !== 'number') {
+    numValue = parseFloat(value);
+  }
+  
+  if (isNaN(numValue)) {
+    return '0.0';
+  }
+  
+  return numValue.toFixed(1);
+};
+
+// Format time (minutes) to hours and minutes
+const formatTime = (minutes) => {
+  if (!minutes) return "0h 0m";
+  
+  // Ensure minutes is a Number, not BigInt
+  const mins = typeof minutes === 'bigint' ? Number(minutes) : Number(minutes || 0);
+  const hours = Math.floor(mins / 60);
+  const remainingMins = Math.floor(mins % 60);
+  return `${hours}h ${remainingMins}m`;
+};
+
+// Format date to readable format
+const formatDate = (dateString) => {
+  if (!dateString) return "";
+  
+  const date = new Date(dateString);
+  return date.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+};
+
+// Helper to safely convert any value to a number
+const safeNumber = (value) => {
+  if (value === null || value === undefined) {
+    return 0;
+  }
+  
+  if (typeof value === 'bigint') {
+    return Number(value);
+  }
+  
+  if (typeof value === 'object' && 'low' in value && 'high' in value) {
+    return Number(value.low);
+  }
+  
+  if (typeof value === 'string' && !isNaN(value)) {
+    return Number(value);
+  }
+  
+  return Number(value || 0);
 };
 
 const BookDetailPage = () => {
@@ -120,6 +172,25 @@ const BookDetailPage = () => {
   const [readingStatus, setReadingStatus] = useState('none'); // none, want-to-read, reading, finished
   const [userRating, setUserRating] = useState(0);
   const [error, setError] = useState(null);
+  
+  // Confirmation dialog state
+  const [showFinishedConfirm, setShowFinishedConfirm] = useState(false);
+  
+  // Review state management
+  const [userReview, setUserReview] = useState('');
+  const [isEditingReview, setIsEditingReview] = useState(false);
+  const [reviewDraft, setReviewDraft] = useState('');
+  
+  // Reading Session states
+  const [activeSession, setActiveSession] = useState(null);
+  const [isReading, setIsReading] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const [timerInterval, setTimerInterval] = useState(null);
+  const [sessionNotes, setSessionNotes] = useState('');
+  const [showSessionForm, setShowSessionForm] = useState(false);
+  const [readingSessions, setReadingSessions] = useState([]);
+  const [showSessionHistory, setShowSessionHistory] = useState(false);
   
   useEffect(() => {
     if (!currentUser) {
@@ -143,6 +214,36 @@ const BookDetailPage = () => {
         const status = await bookService.getUserBookStatus(currentUser.id, id);
         setReadingStatus(status?.status || 'none');
         setUserRating(status?.rating || 0);
+        
+        // If user is reading, set current page
+        if (status?.status === 'reading' && status?.currentPage) {
+          setCurrentPage(status.currentPage);
+        }
+        
+        // Get user's review for this book
+        const review = await bookService.getUserBookReview(currentUser.id, id);
+        setUserReview(review || '');
+        setReviewDraft(review || '');
+        
+        // Check for active reading session
+        const activeSessionData = await bookService.getActiveReadingSession(currentUser.id, id);
+        if (activeSessionData) {
+          setActiveSession(activeSessionData);
+          setIsReading(true);
+          setCurrentPage(activeSessionData.startPage);
+          setElapsedTime(activeSessionData.currentDuration);
+          
+          // Start timer from current duration
+          const interval = setInterval(() => {
+            setElapsedTime(prev => prev + 1);
+          }, 60000); // Update every minute
+          setTimerInterval(interval);
+        }
+        
+        // Get reading sessions history
+        const sessions = await bookService.getBookReadingSessions(currentUser.id, id);
+        setReadingSessions(sessions);
+        
       } catch (error) {
         console.error("Error loading book details:", error);
         setError(error.message || "Failed to load book details");
@@ -152,14 +253,68 @@ const BookDetailPage = () => {
     };
     
     loadBookDetails();
+    
+    // Clean up timer on unmount
+    return () => {
+      if (timerInterval) {
+        clearInterval(timerInterval);
+      }
+    };
   }, [id, currentUser, navigate]);
   
   const handleStatusChange = async (newStatus) => {
     try {
-      await bookService.updateUserBookStatus(currentUser.id, id, newStatus);
+      // Special handling for "Read Again" scenario
+      if (readingStatus === 'finished' && newStatus === 'reading') {
+        // Reset reading progress
+        await bookService.updateUserBookStatus(currentUser.id, id, newStatus, 1);
+        setReadingStatus(newStatus);
+        setCurrentPage(1); // Reset to page 1
+        setShowSessionForm(true);
+        return;
+      }
+      
+      // Special handling for marking as finished
+      if (newStatus === 'finished') {
+        // If there's an active session, show confirmation dialog
+        if (isReading && activeSession) {
+          setShowFinishedConfirm(true);
+          return;
+        }
+        
+        // Otherwise just mark as finished
+        await bookService.updateUserBookStatus(currentUser.id, id, newStatus);
+        setReadingStatus(newStatus);
+        return;
+      }
+      
+      // Normal status change
+      await bookService.updateUserBookStatus(currentUser.id, id, newStatus, 
+        newStatus === 'reading' ? currentPage : null);
       setReadingStatus(newStatus);
+      
+      if (newStatus === 'reading' && !isReading) {
+        setShowSessionForm(true);
+      }
     } catch (error) {
       console.error("Error updating reading status:", error);
+    }
+  };
+  
+  // Handle finishing book with active session
+  const handleFinishWithSession = async () => {
+    try {
+      // End the active session first
+      await handleStopReading();
+      
+      // Then mark as finished
+      await bookService.updateUserBookStatus(currentUser.id, id, 'finished');
+      setReadingStatus('finished');
+      
+      // Close the dialog
+      setShowFinishedConfirm(false);
+    } catch (error) {
+      console.error("Error finishing book:", error);
     }
   };
   
@@ -169,6 +324,95 @@ const BookDetailPage = () => {
       setUserRating(rating);
     } catch (error) {
       console.error("Error setting rating:", error);
+    }
+  };
+  
+  const handleReviewEdit = () => {
+    setIsEditingReview(true);
+    setReviewDraft(userReview);
+  };
+  
+  const handleReviewCancel = () => {
+    setIsEditingReview(false);
+    setReviewDraft(userReview);
+  };
+  
+  const handleReviewSave = async () => {
+    try {
+      await bookService.reviewBook(currentUser.id, id, reviewDraft);
+      setUserReview(reviewDraft);
+      setIsEditingReview(false);
+    } catch (error) {
+      console.error("Error saving review:", error);
+    }
+  };
+  
+  // Reading Session handlers
+  const handleStartReading = async () => {
+    try {
+      const sessionId = await bookService.startReadingSession(
+        currentUser.id, 
+        id,
+        currentPage
+      );
+      
+      if (sessionId) {
+        setActiveSession({ sessionId, startPage: currentPage });
+        setIsReading(true);
+        setElapsedTime(0);
+        setShowSessionForm(false);
+        
+        if (readingStatus !== 'reading') {
+          await bookService.updateUserBookStatus(currentUser.id, id, 'reading', currentPage);
+          setReadingStatus('reading');
+        }
+        
+        // Start timer
+        const interval = setInterval(() => {
+          setElapsedTime(prev => prev + 1);
+        }, 60000); // Update every minute
+        setTimerInterval(interval);
+      }
+    } catch (error) {
+      console.error("Error starting reading session:", error);
+    }
+  };
+  
+  const handleStopReading = async () => {
+    try {
+      if (timerInterval) {
+        clearInterval(timerInterval);
+        setTimerInterval(null);
+      }
+      
+      if (activeSession) {
+        const result = await bookService.endReadingSession(
+          activeSession.sessionId,
+          currentPage,
+          sessionNotes
+        );
+        
+        if (result) {
+          // Refresh reading sessions list
+          const sessions = await bookService.getBookReadingSessions(currentUser.id, id);
+          setReadingSessions(sessions);
+          
+          setActiveSession(null);
+          setIsReading(false);
+          setElapsedTime(0);
+          setSessionNotes('');
+        }
+      }
+    } catch (error) {
+      console.error("Error stopping reading session:", error);
+    }
+  };
+  
+  const handleUpdatePage = async () => {
+    try {
+      await bookService.updateCurrentPage(currentUser.id, id, currentPage);
+    } catch (error) {
+      console.error("Error updating page:", error);
     }
   };
   
@@ -205,7 +449,6 @@ const BookDetailPage = () => {
     );
   }
   
-  // Safely get color for book cover
   const bookColorName = getConsistentColor(book?.id || '');
   const bookColorClass = getColorClass(bookColorName);
   
@@ -226,7 +469,7 @@ const BookDetailPage = () => {
             </button>
           </div>
           
-          {/* Book Header */}
+          {/* Book Header - Keep existing code */}
           <div className="bg-white rounded-lg shadow p-6 mb-6">
             <div className="flex flex-col md:flex-row">
               <div className={`${bookColorClass} w-32 h-48 rounded shadow-md flex-shrink-0 mb-4 md:mb-0`}></div>
@@ -268,7 +511,7 @@ const BookDetailPage = () => {
                   {book?.averageRating && (
                     <div className="flex items-center text-sm text-gray-600">
                       <Star className="h-4 w-4 mr-1 text-yellow-500 fill-current" />
-                      <span>{safeToString(book.averageRating)} ({safeToString(book?.ratingsCount || 0)} ratings)</span>
+                      <span>{formatDecimal(book.averageRating)} ({safeToString(book?.ratingsCount || 0)} ratings)</span>
                     </div>
                   )}
                 </div>
@@ -302,18 +545,22 @@ const BookDetailPage = () => {
                 
                 {/* User actions */}
                 <div className="flex space-x-2">
-                  <button
-                    className={`px-3 py-1 rounded-full text-sm font-medium flex items-center ${
-                      readingStatus === 'want-to-read' 
-                        ? 'bg-indigo-600 text-white' 
-                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                    }`}
-                    onClick={() => handleStatusChange('want-to-read')}
-                  >
-                    <Heart className="h-4 w-4 mr-1" />
-                    Want to Read
-                  </button>
+                  {/* Show "Want to Read" only if not currently reading or finished */}
+                  {readingStatus !== 'reading' && readingStatus !== 'finished' && (
+                    <button
+                      className={`px-3 py-1 rounded-full text-sm font-medium flex items-center ${
+                        readingStatus === 'want-to-read' 
+                          ? 'bg-indigo-600 text-white' 
+                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      }`}
+                      onClick={() => handleStatusChange('want-to-read')}
+                    >
+                      <Heart className="h-4 w-4 mr-1" />
+                      Want to Read
+                    </button>
+                  )}
                   
+                  {/* Show "Reading" for all states (can always start or resume reading) */}
                   <button
                     className={`px-3 py-1 rounded-full text-sm font-medium flex items-center ${
                       readingStatus === 'reading' 
@@ -323,9 +570,10 @@ const BookDetailPage = () => {
                     onClick={() => handleStatusChange('reading')}
                   >
                     <BookOpen className="h-4 w-4 mr-1" />
-                    Reading
+                    {readingStatus === 'finished' ? 'Read Again' : 'Reading'}
                   </button>
                   
+                  {/* Show "Finished" button */}
                   <button
                     className={`px-3 py-1 rounded-full text-sm font-medium flex items-center ${
                       readingStatus === 'finished' 
@@ -358,7 +606,185 @@ const BookDetailPage = () => {
             </div>
           </div>
           
-          {/* Book Description */}
+          {/* Reading Session Tracker - NEW COMPONENT */}
+          {readingStatus === 'reading' && (
+            <div className="bg-white rounded-lg shadow p-6 mb-6">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-bold text-gray-800">Reading Tracker</h2>
+                {!isReading && !showSessionForm && (
+                  <button
+                    onClick={() => setShowSessionForm(true)}
+                    className="bg-indigo-600 text-white px-3 py-1 rounded-md flex items-center"
+                  >
+                    <Play className="h-4 w-4 mr-1" /> Start Session
+                  </button>
+                )}
+              </div>
+              
+              {isReading ? (
+                <div className="space-y-4">
+                  {/* Active reading session */}
+                  <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                    <div className="flex justify-between items-center mb-2">
+                      <h3 className="font-medium text-green-800">Reading in progress</h3>
+                      <div className="text-xl font-bold text-green-700">{formatTime(elapsedTime)}</div>
+                    </div>
+                    <p className="text-sm text-green-600 mb-4">
+                      Started on page {activeSession?.startPage}
+                    </p>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Current Page
+                        </label>
+                        <div className="flex">
+                          <input
+                            type="number"
+                            min={activeSession?.startPage || 1}
+                            max={book?.pageCount || 9999}
+                            value={currentPage}
+                            onChange={(e) => setCurrentPage(parseInt(e.target.value, 10) || activeSession?.startPage || 1)}
+                            className="w-full p-2 border border-gray-300 rounded-l-md"
+                          />
+                          <button
+                            onClick={handleUpdatePage}
+                            className="bg-gray-200 hover:bg-gray-300 px-3 py-2 rounded-r-md text-gray-700"
+                          >
+                            Update
+                          </button>
+                        </div>
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Session Notes
+                        </label>
+                        <textarea
+                          value={sessionNotes}
+                          onChange={(e) => setSessionNotes(e.target.value)}
+                          className="w-full p-2 border border-gray-300 rounded-md h-20"
+                          placeholder="Add notes about this reading session..."
+                        />
+                      </div>
+                    </div>
+                    
+                    <button
+                      onClick={handleStopReading}
+                      className="w-full md:w-auto px-4 py-2 bg-red-600 text-white rounded-lg flex items-center justify-center"
+                    >
+                      <Pause className="h-4 w-4 mr-2" /> End Reading Session
+                    </button>
+                  </div>
+                </div>
+              ) : showSessionForm ? (
+                <div className="p-4 border border-gray-200 rounded-lg">
+                  <h3 className="font-medium text-gray-800 mb-3">Start a new reading session</h3>
+                  <div className="mb-3">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Starting Page
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max={book?.pageCount || 9999}
+                      value={currentPage}
+                      onChange={(e) => setCurrentPage(parseInt(e.target.value, 10) || 1)}
+                      className="w-full p-2 border border-gray-300 rounded-md"
+                    />
+                  </div>
+                  
+                  <div className="flex space-x-2">
+                    <button
+                      onClick={handleStartReading}
+                      className="px-4 py-2 bg-indigo-600 text-white rounded-md flex items-center"
+                    >
+                      <Play className="h-4 w-4 mr-1" /> Start Reading
+                    </button>
+                    
+                    <button
+                      onClick={() => setShowSessionForm(false)}
+                      className="px-4 py-2 border border-gray-300 text-gray-700 rounded-md flex items-center"
+                    >
+                      <X className="h-4 w-4 mr-1" /> Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <p className="text-gray-700">
+                      You're currently on page <span className="font-bold">{currentPage}</span> of <span className="font-bold">{safeNumber(book?.pageCount) || 'unknown'}</span> pages
+                      {book?.pageCount > 0 && ` (${Math.round((currentPage / safeNumber(book.pageCount)) * 100)}% complete)`}.
+                    </p>
+                  </div>
+                  
+                  {book?.pageCount && (
+                    <div className="h-2 bg-gray-200 rounded-full mb-4">
+                      <div 
+                        className="h-2 bg-indigo-600 rounded-full" 
+                        style={{ width: `${Math.min(100, Math.round((currentPage / safeNumber(book.pageCount)) * 100))}%` }}
+                      ></div>
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {/* Reading history */}
+              {readingSessions.length > 0 && (
+                <div className="mt-6">
+                  <div 
+                    className="flex items-center justify-between cursor-pointer"
+                    onClick={() => setShowSessionHistory(!showSessionHistory)}
+                  >
+                    <h3 className="font-medium text-gray-800">Reading History ({readingSessions.length})</h3>
+                    {showSessionHistory ? 
+                      <ChevronUp className="h-5 w-5 text-gray-500" /> : 
+                      <ChevronDown className="h-5 w-5 text-gray-500" />
+                    }
+                  </div>
+                  
+                  {showSessionHistory && (
+                    <div className="mt-2 overflow-x-auto">
+                      <table className="min-w-full divide-y divide-gray-200">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Pages</th>
+                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Notes</th>
+                          </tr>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-gray-200">
+                          {readingSessions.map((session, index) => (
+                            <tr key={session.sessionId || index}>
+                              <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-700">
+                                {formatDate(session.endTime)}
+                              </td>
+                              <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-700">
+                                {session.startPage} - {session.endPage} 
+                                <span className="text-gray-500 text-xs ml-1">
+                                  ({session.pagesRead} pages)
+                                </span>
+                              </td>
+                              <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-700">
+                                {formatTime(session.duration)}
+                              </td>
+                              <td className="px-4 py-2 text-sm text-gray-700 max-w-xs truncate">
+                                {session.notes || '-'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          
+          {/* Book Description - Unchanged */}
           <div className="bg-white rounded-lg shadow p-6 mb-6">
             <h2 className="text-xl font-bold text-gray-800 mb-4">Description</h2>
             <div className="text-gray-700">
@@ -370,7 +796,61 @@ const BookDetailPage = () => {
             </div>
           </div>
           
-          {/* Reading statistics */}
+          {/* User Review - Unchanged */}
+          <div className="bg-white rounded-lg shadow p-6 mb-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-bold text-gray-800">Your Review</h2>
+              
+              {!isEditingReview && (
+                <button 
+                  onClick={handleReviewEdit}
+                  className="flex items-center text-indigo-600 hover:text-indigo-800"
+                >
+                  <Edit className="h-4 w-4 mr-1" />
+                  <span>{userReview ? 'Edit Review' : 'Add Review'}</span>
+                </button>
+              )}
+            </div>
+            
+            {isEditingReview ? (
+              <div>
+                <textarea 
+                  value={reviewDraft}
+                  onChange={(e) => setReviewDraft(e.target.value)}
+                  className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent min-h-32"
+                  placeholder="Write your review here..."
+                />
+                
+                <div className="flex justify-end mt-3 space-x-2">
+                  <button 
+                    onClick={handleReviewCancel}
+                    className="px-3 py-1 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-100 flex items-center"
+                  >
+                    <X className="h-4 w-4 mr-1" />
+                    Cancel
+                  </button>
+                  
+                  <button 
+                    onClick={handleReviewSave}
+                    className="px-3 py-1 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 flex items-center"
+                  >
+                    <Save className="h-4 w-4 mr-1" />
+                    Save
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="text-gray-700 min-h-16">
+                {userReview ? (
+                  <p>{userReview}</p>
+                ) : (
+                  <p className="text-gray-500 italic">You haven't reviewed this book yet</p>
+                )}
+              </div>
+            )}
+          </div>
+          
+          {/* Reading statistics - Enhanced with session data */}
           <div className="bg-white rounded-lg shadow p-6 mb-6">
             <h2 className="text-xl font-bold text-gray-800 mb-4">Reading Stats</h2>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -388,18 +868,85 @@ const BookDetailPage = () => {
               
               <div className="bg-yellow-50 p-4 rounded-lg text-center">
                 <Star className="h-6 w-6 text-yellow-600 mx-auto mb-2" />
-                <div className="text-2xl font-bold text-yellow-700">{safeToString(book?.averageRating || '0.0')}</div>
+                <div className="text-2xl font-bold text-yellow-700">{formatDecimal(book?.averageRating)}</div>
                 <div className="text-xs text-gray-600">Average Rating</div>
               </div>
               
               <div className="bg-purple-50 p-4 rounded-lg text-center">
                 <Clock className="h-6 w-6 text-purple-600 mx-auto mb-2" />
-                <div className="text-2xl font-bold text-purple-700">{safeToString(book?.averageReadingTime || 'N/A')}</div>
-                <div className="text-xs text-gray-600">Average Reading Time</div>
+                <div className="text-2xl font-bold text-purple-700">
+                  {readingSessions.length > 0 
+                    ? formatTime(readingSessions.reduce((sum, session) => {
+                        return sum + safeNumber(session.duration);
+                      }, 0) / readingSessions.length)
+                    : 'N/A'}
+                </div>
+                <div className="text-xs text-gray-600">Avg Session Time</div>
               </div>
             </div>
+            
+            {readingSessions.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <h3 className="font-medium text-gray-800 mb-2">Your Reading Insights</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="bg-blue-50 rounded-lg p-3 flex items-center">
+                    <div className="p-2 rounded-full bg-blue-100 mr-3">
+                      <Timer className="h-5 w-5 text-blue-700" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium">Total Reading Time</div>
+                      <div className="text-lg font-bold text-blue-700">
+                        {formatTime(readingSessions.reduce((sum, session) => {
+                          return sum + safeNumber(session.duration);
+                        }, 0))}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-green-50 rounded-lg p-3 flex items-center">
+                    <div className="p-2 rounded-full bg-green-100 mr-3">
+                      <FileText className="h-5 w-5 text-green-700" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium">Pages Read</div>
+                      <div className="text-lg font-bold text-green-700">
+                        {readingSessions.reduce((sum, session) => {
+                          return sum + safeNumber(session.pagesRead);
+                        }, 0)}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-purple-50 rounded-lg p-3 flex items-center">
+                    <div className="p-2 rounded-full bg-purple-100 mr-3">
+                      <BarChart2 className="h-5 w-5 text-purple-700" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium">Reading Speed</div>
+                      <div className="text-lg font-bold text-purple-700">
+                        {(() => {
+                          // Safe calculation of reading speed
+                          const totalPages = readingSessions.reduce((sum, session) => {
+                            return sum + safeNumber(session.pagesRead);
+                          }, 0);
+                          
+                          const totalDuration = readingSessions.reduce((sum, session) => {
+                            return sum + safeNumber(session.duration);
+                          }, 0);
+                          
+                          return totalDuration > 0 
+                            ? Math.round((totalPages * 60) / totalDuration) 
+                            : 0;
+                        })()} pages/hr
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
           
+          {/* Keep other sections unchanged */}
           {/* Friends reading this book */}
           {book?.friendsReading && book.friendsReading.length > 0 && (
             <div className="bg-white rounded-lg shadow p-6 mb-6">
@@ -466,6 +1013,31 @@ const BookDetailPage = () => {
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+          {/* Finished Confirmation Modal */}
+          {showFinishedConfirm && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white rounded-lg shadow-lg p-6 max-w-md mx-4">
+                <h3 className="text-lg font-bold text-gray-800 mb-3">Finish Reading?</h3>
+                <p className="text-gray-600 mb-4">
+                  You have an active reading session. Would you like to end your current session and mark this book as finished?
+                </p>
+                <div className="flex justify-end space-x-3">
+                  <button
+                    onClick={() => setShowFinishedConfirm(false)}
+                    className="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleFinishWithSession}
+                    className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+                  >
+                    End Session & Finish
+                  </button>
+                </div>
               </div>
             </div>
           )}

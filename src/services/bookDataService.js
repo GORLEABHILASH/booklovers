@@ -2,18 +2,42 @@
 import neo4jService from './neo4jService';
 
 class BookDataService {
-  // Get currently reading books for a user
+  // Helper function to convert Neo4j Integer or BigInt to JS number
+  toNumber(value) {
+    if (value === null || value === undefined) {
+      return 0;
+    }
+    
+    // Convert Neo4j Integer objects
+    if (typeof value === 'object' && 'low' in value && 'high' in value) {
+      return value.low;
+    }
+    
+    // Convert BigInt values
+    if (typeof value === 'bigint') {
+      return Number(value);
+    }
+    
+    // Ensure string numbers are converted to actual numbers
+    if (typeof value === 'string' && !isNaN(value)) {
+      return Number(value);
+    }
+    
+    return value;
+  }
+
+  // Get currently reading books for a user with accurate progress information
   async getCurrentlyReadingBooks(userId) {
     const query = `
-      MATCH (u:USER {id: $userId})-[:HAS_HISTORY]->(rh:READING_HISTORY)-[:CONTAINS_ENTRY]->(he:HISTORY_ENTRY)
-      WHERE he.action = 'started' AND NOT EXISTS {
-        MATCH (rh)-[:CONTAINS_ENTRY]->(finished:HISTORY_ENTRY)
-        WHERE finished.action = 'finished' AND finished.timestamp > he.timestamp
-      }
-      MATCH (he)-[:REFERENCES_BOOK]->(b:BOOK)
-      OPTIONAL MATCH (b)-[:WRITTEN_BY]->(a:AUTHOR)
-      RETURN b, a, he.timestamp as startDate, b.id as bookId
-      ORDER BY startDate DESC
+      MATCH (u:USER {id: $userId})-[r:READING]->(b:BOOK)
+      OPTIONAL MATCH (b)<-[:WROTE]-(a:AUTHOR)
+      OPTIONAL MATCH (b)-[:BELONGS_TO]->(g:GENRE)
+      RETURN b, a, 
+        r.currentPage as currentPage, 
+        r.percentComplete as percentComplete,
+        r.lastUpdated as lastUpdated,
+        collect(DISTINCT g.name) as genres
+      ORDER BY r.lastUpdated DESC
       LIMIT 5
     `;
     
@@ -22,44 +46,60 @@ class BookDataService {
     return result.map(record => {
       const book = record.get('b').properties;
       const author = record.get('a') ? record.get('a').properties : null;
+      const currentPage = this.toNumber(record.get('currentPage')) || 1;
+      const percentComplete = this.toNumber(record.get('percentComplete')) || 0;
+      const genres = record.get('genres') || [];
+      const lastUpdated = record.get('lastUpdated');
+      
       return {
         ...book,
+        id: book.id,
+        title: book.title,
         author: author ? author.name : 'Unknown Author',
-        progress: this._calculateBookProgress(book.id)
+        genres: genres.slice(0, 2),
+        currentPage,
+        progress: Math.round(percentComplete),
+        lastUpdated
       };
     });
   }
   
-  // Calculate book progress (would normally be based on page/chapter data)
-  _calculateBookProgress(bookId) {
-    // In a real implementation, this would fetch actual progress data
-    return Math.floor(Math.random() * 100);
-  }
-  
-  // Get trending books
-  async getTrendingBooks() {
+  // Get trending books in genres the user prefers
+  async getTrendingBooksInUserGenres(userId) {
     const query = `
-      MATCH (u:USER)-[r:RATES]->(b:BOOK)
+      // Find genres the user has preference for
+      MATCH (u:USER {id: $userId})-[:PREFERS_GENRE]->(g:GENRE)
+      
+      // Find books in those genres
+      MATCH (b:BOOK)-[:BELONGS_TO]->(g)
+      
+      // Find users who have interacted with those books recently
+      MATCH (otherUser:USER)-[r:RATES|READING]->(b)
       WHERE r.timestamp > datetime() - duration('P30D')
-      WITH b, count(u) as userCount, avg(r.rating) as avgRating
-      WHERE userCount > 2
-      OPTIONAL MATCH (b)<-[:WROTE]-(a:AUTHOR)
-      OPTIONAL MATCH (b)-[:BELONGS_TO]->(g:GENRE)
-      RETURN b, a, collect(g.name) as genres, userCount, avgRating
-      ORDER BY userCount * avgRating DESC
-      LIMIT 2
+      OR r.lastUpdated > datetime() - duration('P30D')
+      
+      // Get book details
+      WITH b, count(otherUser) as readerCount, g, collect(g.name) as genres
+      MATCH (b)<-[:WROTE]-(a:AUTHOR)
+      
+      // Aggregate and return results
+      RETURN b, a, collect(DISTINCT g.name) as genres, readerCount
+      ORDER BY readerCount DESC
+      LIMIT 4
     `;
     
-    const result = await neo4jService.executeQuery(query);
+    const result = await neo4jService.executeQuery(query, { userId });
     
     return result.map(record => {
       const book = record.get('b').properties;
       const author = record.get('a') ? record.get('a').properties : null;
       const genres = record.get('genres') || [];
-      const readers = record.get('userCount').toNumber();
+      const readers = this.toNumber(record.get('readerCount'));
       
       return {
         ...book,
+        id: book.id,
+        title: book.title,
         author: author ? author.name : 'Unknown Author',
         genres: genres.slice(0, 2),
         readers
@@ -67,79 +107,361 @@ class BookDataService {
     });
   }
   
-
-  // Get friend recommendations based on similar tastes
-// Get friend recommendations based on similar tastes
-// Get friend recommendations based on similar tastes
-async getFriendRecommendations(userId, limit = 5) {
+  // Modified getSocialMediaTrending method with less restrictive timestamp filter
+// Fixed getSocialMediaTrending method - resolving the Neo4j query error
+async getSocialMediaTrending() {
   const query = `
-    MATCH (u:USER {id: $userId})-[:RATES]->(b:BOOK)<-[:RATES]-(other:USER)
-    WHERE NOT (u)-[:FRIEND|FOLLOWS]-(other) AND u <> other
+    // Find books that have been mentioned in posts
+    MATCH (p:POST)-[:ABOUT]->(b:BOOK)
     
-    WITH other, count(b) as commonBooks
+    // Count comments on these posts
+    OPTIONAL MATCH (p)<-[:ON]-(c:COMMENT)
     
-    MATCH (u)-[:PREFERS_GENRE]->(g:GENRE)<-[:PREFERS_GENRE]-(other)
-    WITH other, commonBooks, count(g) as commonGenres
+    // Group by book and count interactions
+    WITH b, count(DISTINCT p) as postCount, 
+         count(DISTINCT c) as commentCount, 
+         sum(coalesce(p.likes, 0)) as likeCount
     
-    MATCH (u)-[:PREFERS_THEME]->(t:THEME)<-[:PREFERS_THEME]-(other)
-    WITH other, commonBooks, commonGenres, count(t) as commonThemes
+    // Calculate a social score 
+    WITH b, postCount, commentCount, likeCount,
+         postCount + commentCount + likeCount as socialScore
     
-    MATCH (u)-[:LIVES_IN]->(:CITY)-[:PART_OF]->(:STATE)<-[:PART_OF]-(:CITY)<-[:LIVES_IN]-(other)
-    WITH other, commonBooks, commonGenres, commonThemes, count(*) as sameState
+    // Get book details
+    MATCH (b)<-[:WROTE]-(a:AUTHOR)
+    OPTIONAL MATCH (b)-[:BELONGS_TO]->(g:GENRE)
     
-    RETURN other, 
-      commonBooks * 2 + commonGenres * 3 + commonThemes * 2 + sameState * 1 as matchScore,
-      commonBooks
-    ORDER BY matchScore DESC
-    LIMIT toInteger($limit)
+    // Count current readers
+    OPTIONAL MATCH (u:USER)-[:READING]->(b)
+    
+    // Return with all metrics
+    RETURN b, a, collect(DISTINCT g.name) as genres, 
+           count(u) as readers,
+           postCount, commentCount, likeCount, socialScore
+    ORDER BY socialScore DESC
+    LIMIT 4
   `;
-
-  const params = { userId, limit: Number(limit) };
-  const records = await neo4jService.executeQuery(query, params);
   
-  return records.map(record => {
-    const user = record.get('other').properties;
-    const matchScore = record.get('matchScore').toNumber(); // Convert to number
-    const commonBooks = record.get('commonBooks').toNumber();
-    const matchPercent = Math.min(Math.round((matchScore / 50) * 100), 99);
-    return { ...user, matchScore: matchPercent, commonBooks };
+  const result = await neo4jService.executeQuery(query);
+  
+  return result.map(record => {
+    const book = record.get('b').properties;
+    const author = record.get('a') ? record.get('a').properties : null;
+    const genres = record.get('genres') || [];
+    const readers = this.toNumber(record.get('readers'));
+    const postCount = this.toNumber(record.get('postCount'));
+    const commentCount = this.toNumber(record.get('commentCount'));
+    const likeCount = this.toNumber(record.get('likeCount'));
+    
+    return {
+      ...book,
+      id: book.id,
+      title: book.title,
+      author: author ? author.name : 'Unknown Author',
+      genres: genres.slice(0, 2),
+      readers,
+      socialStats: {
+        posts: postCount,
+        comments: commentCount,
+        likes: likeCount
+      }
+    };
   });
 }
-  // Get personalized book recommendations
-  async getBookRecommendations(userId) {
-    const query = `
-      MATCH (u:USER {id: $userId})-[:RATES]->(b:BOOK)
-      WITH u, avg(b.publishedYear) as avgYear
-      
-      MATCH (u)-[:RATES]->(b:BOOK)-[:BELONGS_TO]->(g:GENRE)<-[:BELONGS_TO]-(rec:BOOK)
-      WHERE NOT EXISTS {
-        MATCH (u)-[:RATES]->(rec)
+
+// Fixed getBookClubTrending method - ensuring correct query structure
+async getBookClubTrending() {
+  const query = `
+    // Find books featured in book clubs
+    MATCH (bc:BOOK_CLUB)-[f:FEATURED]->(b:BOOK)
+    
+    // Group by book and count featuring book clubs
+    WITH b, count(DISTINCT bc) as clubCount, 
+         avg(coalesce(f.rating, 4.0)) as avgRating
+    
+    // Get book details
+    MATCH (b)<-[:WROTE]-(a:AUTHOR)
+    OPTIONAL MATCH (b)-[:BELONGS_TO]->(g:GENRE)
+    
+    // Count current readers
+    OPTIONAL MATCH (u:USER)-[:READING]->(b)
+    
+    // Return with all metrics
+    RETURN b, a, collect(DISTINCT g.name) as genres, 
+           count(u) as readers,
+           clubCount, avgRating
+    ORDER BY clubCount DESC
+    LIMIT 4
+  `;
+  
+  const result = await neo4jService.executeQuery(query);
+  
+  return result.map(record => {
+    const book = record.get('b').properties;
+    const author = record.get('a') ? record.get('a').properties : null;
+    const genres = record.get('genres') || [];
+    const readers = this.toNumber(record.get('readers'));
+    const clubCount = this.toNumber(record.get('clubCount'));
+    const avgRating = this.toNumber(record.get('avgRating'));
+    
+    return {
+      ...book,
+      id: book.id,
+      title: book.title,
+      author: author ? author.name : 'Unknown Author',
+      genres: genres.slice(0, 2),
+      readers,
+      clubStats: {
+        clubCount,
+        avgRating: Math.round(avgRating * 10) / 10
       }
+    };
+  });
+}
+  
+  // Get trending books in the user's location
+  async getLocalTrending(userId) {
+    const query = `
+      // Find the user's location
+      MATCH (u:USER {id: $userId})-[:LIVES_IN]->(userCity:CITY)-[:PART_OF]->(userState:STATE)
       
-      WITH rec, count(*) as genreOverlap, avgYear
-      OPTIONAL MATCH (rec)<-[:WROTE]-(a:AUTHOR)
+      // Find other users in the same state
+      MATCH (otherUser:USER)-[:LIVES_IN]->(otherCity:CITY)-[:PART_OF]->(userState)
       
-      RETURN rec, a,
-        genreOverlap * 3 + (10 - abs(coalesce(rec.publishedYear, 2020) - coalesce(avgYear, 2020)) / 10) as score
-      ORDER BY score DESC
-      LIMIT 3
+      // Find books these users are reading
+      MATCH (otherUser)-[r:RATES|READING]->(b:BOOK)
+      WHERE r.timestamp > datetime() - duration('P30D')
+      OR r.lastUpdated > datetime() - duration('P30D')
+      
+      // Group by book and count local readers
+      WITH b, userCity.name as cityName, userState.name as stateName,
+           count(DISTINCT otherUser) as localReaderCount
+      
+      // Get book details
+      MATCH (b)<-[:WROTE]-(a:AUTHOR)
+      OPTIONAL MATCH (b)-[:BELONGS_TO]->(g:GENRE)
+      
+      // Return with all metrics
+      RETURN b, a, collect(DISTINCT g.name) as genres, 
+             localReaderCount as readers,
+             cityName, stateName
+      ORDER BY localReaderCount DESC
+      LIMIT 4
     `;
     
     const result = await neo4jService.executeQuery(query, { userId });
     
     return result.map(record => {
-      const book = record.get('rec').properties;
+      const book = record.get('b').properties;
       const author = record.get('a') ? record.get('a').properties : null;
-      const score = record.get('score');
+      const genres = record.get('genres') || [];
+      const readers = this.toNumber(record.get('readers'));
+      const cityName = record.get('cityName');
+      const stateName = record.get('stateName');
       
       return {
         ...book,
+        id: book.id,
+        title: book.title,
         author: author ? author.name : 'Unknown Author',
-        matchPercent: Math.min(Math.round(score * 10), 99)
+        genres: genres.slice(0, 2),
+        readers,
+        locationStats: {
+          location: cityName,
+          state: stateName
+        }
       };
     });
   }
   
+ // Updated BookDataService with filtered recommendation methods
+
+// Get book recommendations based on filter type
+async getBookRecommendations(userId, filterType = 'similar') {
+  // Select the appropriate query based on filter type
+  switch(filterType) {
+    case 'similar':
+      return this.getSimilarUserRecommendations(userId);
+    case 'friends': 
+      return this.getFriendsActivityRecommendations(userId);
+    case 'profession':
+      return this.getProfessionBasedRecommendations(userId);
+    default:
+      return this.getSimilarUserRecommendations(userId);
+  }
+}
+
+// Get recommendations based on similar users' preferences
+// Get recommendations based on similar users with relaxed criteria
+async getSimilarUserRecommendations(userId) {
+  const query = `
+    // Find all users except the current user
+    MATCH (u:USER {id: $userId})
+    MATCH (similarUser:USER)
+    WHERE u <> similarUser
+    
+    // Look for any genre overlap
+    OPTIONAL MATCH (u)-[:PREFERS_GENRE]->(g:GENRE)<-[:PREFERS_GENRE]-(similarUser)
+    WITH similarUser, count(g) as genreOverlap, u
+    
+    // Find books rated by these users
+    MATCH (similarUser)-[r:RATES]->(b:BOOK)
+    
+    // Make sure user hasn't already rated the book (keep this restriction)
+    WHERE NOT EXISTS {
+      MATCH (u)-[:RATES|READING]->(b)
+    }
+    
+    // Get book details
+    WITH b, max(genreOverlap) as maxSimilarity, avg(r.rating) as avgRating
+    MATCH (b)<-[:WROTE]-(a:AUTHOR)
+    OPTIONAL MATCH (b)-[:BELONGS_TO]->(g:GENRE)
+    
+    // Return results
+    RETURN b, a, collect(DISTINCT g.name) as genres,
+           CASE 
+             WHEN maxSimilarity > 0 THEN maxSimilarity * 10 + avgRating * 5
+             ELSE avgRating * 10
+           END as matchScore
+    ORDER BY matchScore DESC
+    LIMIT 10
+  `;
+  
+  const result = await neo4jService.executeQuery(query, { userId });
+  
+  return result.map(record => {
+    const book = record.get('b').properties;
+    const author = record.get('a') ? record.get('a').properties : null;
+    const genres = record.get('genres') || [];
+    const matchScore = this.toNumber(record.get('matchScore'));
+    
+    return {
+      ...book,
+      id: book.id,
+      title: book.title,
+      author: author ? author.name : 'Unknown Author',
+      genres: genres.slice(0, 2),
+      matchPercent: Math.min(Math.round(matchScore), 99),
+      similarityReason: true
+    };
+  });
+}
+
+// Get recommendations based on profession with relaxed criteria
+
+// Get recommendations based on friends' reading activity
+async getFriendsActivityRecommendations(userId) {
+  const query = `
+    // Find direct friends
+    MATCH (u:USER {id: $userId})-[:FRIEND]->(friend:USER)
+    
+    // Find books friends are reading or have rated highly
+    MATCH (friend)-[r:RATES|READING]->(b:BOOK)
+    WHERE (r:RATES AND r.rating >= 4) OR r:READING
+    
+    // Make sure user hasn't already rated the book
+    AND NOT EXISTS {
+      MATCH (u)-[:RATES|READING]->(b)
+    }
+    
+    // Count how many friends are reading each book
+    WITH b, count(friend) as friendCount, collect(friend.name) as friendNames
+    
+    // Get book details
+    MATCH (b)<-[:WROTE]-(a:AUTHOR)
+    OPTIONAL MATCH (b)-[:BELONGS_TO]->(g:GENRE)
+    
+    // Calculate match score based on friend count
+    RETURN b, a, collect(DISTINCT g.name) as genres,
+           friendCount, 
+           friendNames[0] as topFriendName,
+           CASE
+             WHEN friendCount > 3 THEN friendCount * 25
+             ELSE friendCount * 20
+           END as matchScore
+    ORDER BY matchScore DESC
+    LIMIT 10
+  `;
+  
+  const result = await neo4jService.executeQuery(query, { userId });
+  
+  return result.map(record => {
+    const book = record.get('b').properties;
+    const author = record.get('a') ? record.get('a').properties : null;
+    const genres = record.get('genres') || [];
+    const matchScore = this.toNumber(record.get('matchScore'));
+    const friendCount = this.toNumber(record.get('friendCount'));
+    const topFriendName = record.get('topFriendName');
+    
+    const friendName = topFriendName ? topFriendName.split(' ')[0] : null;
+    const friendReason = friendCount > 1 
+      ? `${friendName} and ${friendCount-1} others are reading`
+      : friendName 
+        ? `${friendName} is reading` 
+        : 'Friend recommendation';
+    
+    return {
+      ...book,
+      id: book.id,
+      title: book.title,
+      author: author ? author.name : 'Unknown Author',
+      genres: genres.slice(0, 2),
+      matchPercent: Math.min(Math.round(matchScore), 99),
+      friendReason
+    };
+  });
+}
+
+// Get recommendations based on profession
+async getProfessionBasedRecommendations(userId) {
+  const query = `
+    // Get all books rated by any user
+    MATCH (u:USER {id: $userId})
+    MATCH (otherUser:USER)-[r:RATES]->(b:BOOK)
+    WHERE u <> otherUser
+    
+    // Add a check for profession similarity if it exists
+    WITH u, otherUser, b, r,
+         CASE WHEN u.profession IS NOT NULL AND u.profession = otherUser.profession 
+              THEN 3 ELSE 1 END as professionBoost
+    
+    // Make sure user hasn't already rated the book
+    WHERE NOT EXISTS {
+      MATCH (u)-[:RATES|READING]->(b)
+    }
+    
+    // Group by book and calculate score
+    WITH b, count(otherUser) as readerCount, avg(r.rating) as avgRating, max(professionBoost) as maxBoost
+    
+    // Get book details
+    MATCH (b)<-[:WROTE]-(a:AUTHOR)
+    OPTIONAL MATCH (b)-[:BELONGS_TO]->(g:GENRE)
+    
+    // Calculate match score with profession boost
+    RETURN b, a, collect(DISTINCT g.name) as genres,
+           readerCount * avgRating * maxBoost as matchScore
+    ORDER BY matchScore DESC
+    LIMIT 10
+  `;
+  
+  const result = await neo4jService.executeQuery(query, { userId });
+  
+  return result.map(record => {
+    const book = record.get('b').properties;
+    const author = record.get('a') ? record.get('a').properties : null;
+    const genres = record.get('genres') || [];
+    const matchScore = this.toNumber(record.get('matchScore'));
+    
+    return {
+      ...book,
+      id: book.id,
+      title: book.title,
+      author: author ? author.name : 'Unknown Author',
+      genres: genres.slice(0, 2),
+      matchPercent: Math.min(Math.round(matchScore), 99),
+      professionReason: true
+    };
+  });
+}
   // Get upcoming events
   async getUpcomingEvents(userId) {
     const query = `
@@ -162,7 +484,7 @@ async getFriendRecommendations(userId, limit = 5) {
     
     return result.map(record => {
       const event = record.get('e').properties;
-      const friendsAttending = record.get('friendsAttending').toNumber();
+      const friendsAttending = this.toNumber(record.get('friendsAttending'));
       const cityName = record.get('cityName');
       
       return {
@@ -173,7 +495,7 @@ async getFriendRecommendations(userId, limit = 5) {
     });
   }
   
-  // Get recently added books - FIXED QUERY
+  // Get recently added books
   async getRecentlyAddedBooks() {
     const query = `
       MATCH (b:BOOK)
@@ -217,6 +539,36 @@ async getFriendRecommendations(userId, limit = 5) {
         hasRead
       };
     });
+  }
+
+  // Get user's reading session stats per book
+  async getBookReadingSessionStats(userId, bookId) {
+    const query = `
+      MATCH (u:USER {id: $userId})-[:HAS_SESSION]->(rs:READING_SESSION)-[:FOR_BOOK]->(b:BOOK {id: $bookId})
+      WHERE rs.active = false
+      RETURN count(rs) as sessionCount,
+             sum(rs.duration) as totalReadingMinutes,
+             sum(rs.pagesRead) as totalPagesRead,
+             avg(rs.duration) as avgSessionDuration
+    `;
+    
+    const result = await neo4jService.executeQuery(query, { userId, bookId });
+    
+    if (result.length === 0) {
+      return {
+        sessionCount: 0,
+        totalReadingMinutes: 0,
+        totalPagesRead: 0,
+        avgSessionDuration: 0
+      };
+    }
+    
+    return {
+      sessionCount: this.toNumber(result[0].get('sessionCount')),
+      totalReadingMinutes: this.toNumber(result[0].get('totalReadingMinutes')),
+      totalPagesRead: this.toNumber(result[0].get('totalPagesRead')),
+      avgSessionDuration: this.toNumber(result[0].get('avgSessionDuration'))
+    };
   }
 }
 
