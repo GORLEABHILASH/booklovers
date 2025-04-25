@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom'
-import { Home, Search, BookOpen, User, MessageSquare } from 'lucide-react'
+import { Home, Search, BookOpen, Users, MessageSquare } from 'lucide-react'
 
 const BottomNavigation = () => {
   const navigate = useNavigate()
@@ -13,7 +13,7 @@ const BottomNavigation = () => {
     { path: '/explore', icon: Search, label: 'Explore' },
     // These routes need to be defined in your App component
     { path: '/my-books', icon: BookOpen, label: 'My Books' },
-    { path: '/profile', icon: User, label: 'Profile' },
+    { path: '/social', icon: Users, label: 'Social' },
     { path: '/chatbot', icon: MessageSquare, label: 'ChatBot' }
   ]
 
